@@ -1,17 +1,16 @@
-//
-//  PCXPreviewApp.swift
-//  PCXPreview
-//
-//  Created by Ryan Clarke on 11/23/25.
-//
-
+import Foundation
 import SwiftUI
 
 @main
 struct PCXPreviewApp: App {
     var body: some Scene {
-        DocumentGroup(newDocument: PCXPreviewDocument()) { file in
-            ContentView(document: file.$document)
+        DocumentGroup(viewing: PCXFile.self) { file in
+            ContentView(document: file.document, fileURL: file.fileURL)
+        }
+        .commands {
+            FileCommands()
+            EditCommands()
+            ViewCommands()
         }
     }
 }
