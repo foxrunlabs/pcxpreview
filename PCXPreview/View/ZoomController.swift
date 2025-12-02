@@ -2,17 +2,6 @@ import Observation
 
 @Observable
 final class ZoomController {
-    var scale: Double
-    var actualSize: Double
-    
-    init(scale: Double = 1.0, actualSize: Double = 1.0) {
-        self.scale = scale
-        self.actualSize = actualSize
-    }
-    
-    var isActualSize: Bool { scale == actualSize }
-    var isZoomedToFit: Bool { scale == 1.0 }
-    
     enum ZoomLevel {
         case actualSize
         case fit
@@ -20,16 +9,31 @@ final class ZoomController {
         case zoomOut
     }
     
-    func zoom(_ level: ZoomLevel) {
-        switch level {
-        case .actualSize:
-            scale = actualSize
-        case .fit:
-            scale = 1.0
-        case .zoomIn:
-            scale *= 1.25
-        case .zoomOut:
-            scale /= 1.25
+    private(set) var scale = 1.0
+    
+    var fitScale = 1.0 {
+        didSet {
+            if zoomLocked { zoom(.fit) }    // live zoom if user selected zoom to fit
         }
+    }
+    
+    private var zoomLocked = false
+    
+    var isActualSize: Bool { scale == 1.0 }
+    var isZoomedToFit: Bool { scale == fitScale }
+    
+    func zoom(_ level: ZoomLevel) {
+        scale = switch level {
+        case .actualSize:
+            1.0
+        case .fit:
+            fitScale
+        case .zoomIn:
+            scale * 1.25
+        case .zoomOut:
+            scale / 1.25
+        }
+        
+        zoomLocked = (level == .fit)
     }
 }

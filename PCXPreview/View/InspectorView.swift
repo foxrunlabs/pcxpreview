@@ -54,15 +54,21 @@ fileprivate struct GeneralInfoView: View {
                     }
                     
                     LabeledContent("File Size") {
-                        Text(resourceValues?.fileSize?.formatted(.byteCount(style: .file, includesActualByteCount: true)) ?? "Unknown")
+                        Text(resourceValues?.fileSize?
+                            .formatted(.byteCount(style: .file, includesActualByteCount: true)) ?? "Unknown"
+                        )
                     }
                     
                     LabeledContent("Creation Date") {
-                        Text(resourceValues?.creationDate?.formatted(date: .abbreviated, time: .shortened) ?? "Unknown")
+                        Text(resourceValues?.creationDate?
+                            .formatted(date: .abbreviated, time: .shortened) ?? "Unknown"
+                        )
                     }
                     
                     LabeledContent("Modification Date") {
-                        Text(resourceValues?.contentModificationDate?.formatted(date: .abbreviated, time: .shortened) ?? "Unknown")
+                        Text(resourceValues?.contentModificationDate?
+                            .formatted(date: .abbreviated, time: .shortened) ?? "Unknown"
+                        )
                     }
                 }
                 .font(.subheadline)
