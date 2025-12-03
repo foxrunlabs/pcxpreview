@@ -129,6 +129,22 @@ fileprivate struct MoreInfoView: View {
                     LabeledContent("Version") {
                         Text(String(describing: document.header.version))
                     }
+                    
+                    LabeledContent("Bits Per Pixel Per Plane") {
+                        Text("\(document.header.bitsPerPixelPerPlane)")
+                    }
+                    
+                    LabeledContent("Number of Planes") {
+                        Text("\(document.header.numberOfPlanes)")
+                    }
+                    
+                    LabeledContent("Encoding") {
+                        Text(String(describing: document.header.encoding))
+                    }
+                    
+                    LabeledContent("Palette Type") {
+                        Text(String(describing: document.header.paletteType))
+                    }
                 }
                 .font(.subheadline)
             }
