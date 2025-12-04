@@ -1,8 +1,19 @@
 import SwiftUI
 
 struct FileCommands: Commands {
+    @FocusedValue(\.document) private var document
+    @FocusedBinding(\.showExporter) private var showExporter
+    
     var body: some Commands {
         CommandGroup(replacing: .newItem) { EmptyView() }
+        
+        CommandGroup(replacing: .importExport) {
+            Button("Export As...", systemImage: "square.and.arrow.up") {
+                showExporter?.toggle()
+            }
+            .disabled(document == nil)
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+        }
     }
 }
 

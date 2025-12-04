@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import SwiftUI
@@ -437,6 +438,7 @@ struct PCXFile: FileDocument {
     
     // MARK: - FileDocument
     static var readableContentTypes: [UTType] = [.pcx]
+    static var writableContentTypes: [UTType] = [.bmp, .jpeg, .png]
     
     init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents else {
@@ -447,9 +449,24 @@ struct PCXFile: FileDocument {
     }
     
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        var data = Data()
-        data.append(header.packedData)
-        data.append(imageData)
+        guard let cgImage else { throw CocoaError(.fileWriteUnknown) }
+        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+        
+        guard
+            let data = switch configuration.contentType {
+            case .bmp:
+                bitmapRep.representation(using: .bmp, properties: [:])
+            case .jpeg:
+                bitmapRep.representation(using: .jpeg, properties: [:])
+            case .png:
+                bitmapRep.representation(using: .png, properties: [:])
+            default:
+                throw CocoaError(.fileWriteUnknown)
+            }
+        else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        
         return FileWrapper(regularFileWithContents: data)
     }
     

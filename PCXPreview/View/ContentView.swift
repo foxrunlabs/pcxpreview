@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     let document: PCXFile
@@ -8,6 +9,7 @@ struct ContentView: View {
     private let cgImage: CGImage?
     @State private var zoomController = ZoomController()
     @State private var showInspector = false
+    @State private var showExporter = false
     
     init(document: PCXFile, fileURL: URL?) {
         self.document = document
@@ -82,8 +84,17 @@ struct ContentView: View {
         .inspector(isPresented: $showInspector) {
             InspectorView(document: document, fileURL: fileURL)
         }
+        .fileExporter(
+            isPresented: $showExporter,
+            document: document,
+            contentTypes: [.bmp, .jpeg, .png],
+            defaultFilename: fileURL?.deletingPathExtension().lastPathComponent
+        ) { result in
+            
+        }
         .focusedSceneValue(\.document, document)
         .focusedSceneValue(zoomController)
+        .focusedSceneValue(\.showExporter, $showExporter)
     }
 }
 
