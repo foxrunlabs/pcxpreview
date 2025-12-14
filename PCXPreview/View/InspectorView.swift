@@ -19,10 +19,10 @@ struct InspectorView: View {
     }
 }
 
+// MARK: - Inspector Tab Views
 fileprivate struct GeneralInfoView: View {
     let document: PCXFile
     let fileURL: URL?
-    
     private let resourceValues: URLResourceValues?
     
     init(document: PCXFile, fileURL: URL?) {
@@ -54,8 +54,9 @@ fileprivate struct GeneralInfoView: View {
                     }
                     
                     LabeledContent("File Size") {
-                        Text(resourceValues?.fileSize?
-                            .formatted(.byteCount(style: .file, includesActualByteCount: true)) ?? "Unknown"
+                        Text(resourceValues?.fileSize?.formatted(
+                                .byteCount(style: .file, includesActualByteCount: true)
+                            ) ?? "Unknown"
                         )
                     }
                     
@@ -93,7 +94,6 @@ fileprivate struct GeneralInfoView: View {
 
 fileprivate struct MoreInfoView: View {
     let document: PCXFile
-    
     @State private var isGeneralExpanded = true
     @State private var isPCXExpanded = false
     
@@ -102,7 +102,7 @@ fileprivate struct MoreInfoView: View {
             Section("General", isExpanded: $isGeneralExpanded) {
                 Group {
                     LabeledContent("Depth") {
-                        Text("\(document.header.depth)")
+                        Text("\(document.depth)")
                     }
                     
                     LabeledContent("DPI Height") {

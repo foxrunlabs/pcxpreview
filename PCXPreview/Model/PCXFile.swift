@@ -5,6 +5,151 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct PCXFile: FileDocument {
+    typealias ARGB32 = UInt32
+    
+    let header: Header
+    let width: Int
+    let height: Int
+    let depth: Int
+    private let pcxData: Data
+    private let palette: [ARGB32]
+    private var bitmap: [ARGB32] = []
+    
+    init(data: Data) throws {
+        self.pcxData = data
+        
+        let headerData = data.prefix(Header.size)
+        self.header = try Header(data: headerData)
+        self.width = header.maxX - header.minX + 1
+        self.height = header.maxY - header.minY + 1
+        self.depth = header.bitsPerPixelPerPlane * header.numberOfPlanes
+        
+        // get the BGR24 (LE) palette and convert to ARGB32 (LE)
+        let paletteFlag: UInt8 = 0x0C
+        let paletteFlagOffset = data.endIndex - 769
+        let bgrPalette: [UInt8] = switch header.version {
+        case .v25, .v28WithoutPalette:
+            egaPalette                                   // fixed EGA palette
+        case .v28WithPalette:
+            header.palette                               // modified EGA palette
+        case .v30 where data[paletteFlagOffset] == paletteFlag:
+            data.suffix(768)                             // VGA 256-color palette
+        case .v30 where header.imageType == .trueColor:
+            []                                           // VGA 24-bit no palette
+        default:
+            throw Header.HeaderError.version
+        }
+        
+        self.palette = stride(from: 0, to: bgrPalette.count, by: 3).map { n in
+            ARGB32(red: bgrPalette[n], green: bgrPalette[n + 1], blue: bgrPalette[n + 2])
+        }
+        
+        // decode image data
+        let imageData = data.advanced(by: Header.size)
+        guard imageData.count > 0 else { throw CocoaError(.fileReadCorruptFile) }
+        self.bitmap = decodeImageData(imageData)
+    }
+    
+    private func decodeImageData(_ data: Data) -> [ARGB32] {
+        var output = [ARGB32](repeating: 0, count: width * height)
+        let totalBytesPerLine = header.bytesPerLine * header.numberOfPlanes
+        var scanline = [UInt8](repeating: 0, count: totalBytesPerLine)
+        
+        data.withUnsafeBytes { rawBuffer in
+            let srcBuffer = rawBuffer.bindMemory(to: UInt8.self)
+            guard let srcPtr = srcBuffer.baseAddress else { return }
+            var srcOffset = 0
+            
+            @inline(__always)
+            func decodeScanline(_ destPtr: UnsafeMutablePointer<UInt8>) {
+                var destOffset = 0
+                
+                while destOffset < totalBytesPerLine && srcOffset < srcBuffer.count {
+                    let byte = srcPtr[srcOffset]
+                    srcOffset += 1
+                    
+                    if byte < 192 {
+                        destPtr[destOffset] = byte
+                        destOffset += 1
+                    } else {
+                        guard srcOffset < srcBuffer.count else { break }
+                        let count = Int(byte & 0x3F)
+                        let value = srcPtr[srcOffset]
+                        srcOffset += 1
+                        
+                        if count > 0 {
+                            let numBytes = min(count, totalBytesPerLine - destOffset)
+                            destPtr.advanced(by: destOffset).update(repeating: value, count: numBytes)
+                            destOffset += numBytes
+                        }
+                    }
+                }
+            }
+            
+            scanline.withUnsafeMutableBufferPointer { scanlineBuffer in
+                guard let scanlinePtr = scanlineBuffer.baseAddress else { return }
+                
+                switch header.imageType {
+                case .vga:
+                    for y in 0..<height {
+                        decodeScanline(scanlinePtr)
+                        
+                        for x in 0..<width {
+                            let index = Int(scanlinePtr[x])
+                            output[x + y * width] = palette[index]
+                        }
+                    }
+                case .trueColor:
+                    let redBase = 0
+                    let greenBase = header.bytesPerLine
+                    let blueBase = 2 * header.bytesPerLine
+                    
+                    for y in 0..<height {
+                        decodeScanline(scanlinePtr)
+                        
+                        for x in 0..<width {
+                            let red = scanlinePtr[redBase + x]
+                            let green = scanlinePtr[greenBase + x]
+                            let blue = scanlinePtr[blueBase + x]
+                            
+                            output[x + y * width] = ARGB32(red: red, green: green, blue: blue)
+                        }
+                    }
+                default:
+                    output.removeAll()
+                }
+            }
+        }
+        
+        return output
+    }
+    
+    var cgImage: CGImage? {
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageByteOrderInfo.order32Little.rawValue |
+                                      CGImageAlphaInfo.premultipliedFirst.rawValue)
+        
+        let bytes = bitmap.withUnsafeBufferPointer { Data(buffer: $0) }
+        guard let dataProvider = CGDataProvider(data: bytes as CFData) else { return nil }
+        
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: header.bitsPerPixelPerPlane,
+            bitsPerPixel: ARGB32.bitWidth,
+            bytesPerRow: MemoryLayout<ARGB32>.size * width,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo,
+            provider: dataProvider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
+    }
+}
+
+// MARK: - Header
+extension PCXFile {
     struct Header {
         enum HeaderError: LocalizedError {
             case headerSize(Int)
@@ -32,7 +177,7 @@ struct PCXFile: FileDocument {
             }
         }
         
-        enum Version: UInt8, CustomStringConvertible {
+        enum Version: Int, CustomStringConvertible {
             case v25 = 0
             case v28WithPalette = 2
             case v28WithoutPalette = 3
@@ -55,7 +200,7 @@ struct PCXFile: FileDocument {
             }
         }
         
-        enum Encoding: UInt8, CustomStringConvertible {
+        enum Encoding: Int, CustomStringConvertible {
             case uncompressed = 0
             case rle = 1
             
@@ -69,7 +214,7 @@ struct PCXFile: FileDocument {
             }
         }
         
-        enum PaletteType: UInt16, CustomStringConvertible {
+        enum PaletteType: Int, CustomStringConvertible {
             case ignored = 0
             case colorOrMonochrome = 1
             case grayscale = 2
@@ -86,7 +231,7 @@ struct PCXFile: FileDocument {
             }
         }
         
-        enum ImageType: CustomStringConvertible {
+        enum ImageType: CustomStringConvertible, nonisolated Equatable {
             case unknown
             case egaPlanar
             case egaIndexed
@@ -109,99 +254,42 @@ struct PCXFile: FileDocument {
             }
         }
         
-        let id: UInt8 = magicNumber                     // 00: PCX ID number
+        private static let magicNumber: UInt8 = 0x0A    // 00: PCX ID number
         let version: Version                            // 01: Version number
         let encoding: Encoding                          // 02: Encoding format
-        let bitsPerPixelPerPlane: UInt8                 // 03: Bits per pixel per plane
-        let minX: UInt16                                // 04: Left of image
-        let minY: UInt16                                // 06: Top of image
-        let maxX: UInt16                                // 08: Right of image
-        let maxY: UInt16                                // 10: Bottom of image
-        let horizontalDPI: UInt16                       // 12: Horizontal resolution in DPI
-        let verticalDPI: UInt16                         // 14: Vertical resolution in DPI
+        let bitsPerPixelPerPlane: Int                   // 03: Bits per pixel per plane
+        let minX: Int                                   // 04: Left of image
+        let minY: Int                                   // 06: Top of image
+        let maxX: Int                                   // 08: Right of image
+        let maxY: Int                                   // 10: Bottom of image
+        let horizontalDPI: Int                          // 12: Horizontal resolution in DPI
+        let verticalDPI: Int                            // 14: Vertical resolution in DPI
         let palette: [UInt8]                            // 16: 16-color EGA palette (RGB888)
-        let reserved: UInt8 = reservedByte              // 64: Reserved (always 0)
-        let numberOfPlanes: UInt8                       // 65: Number of color planes
-        let bytesPerLine: UInt16                        // 66: Number of bytes per line per plane
+        private static let reservedByte: UInt8 = 0      // 64: Reserved (always 0)
+        let numberOfPlanes: Int                         // 65: Number of color planes
+        let bytesPerLine: Int                           // 66: Number of bytes per line per plane
         let paletteType: PaletteType                    // 68: Palette type
-        let horizontalScreenSize: UInt16                // 70: Horizontal screen resolution
-        let verticalScreenSize: UInt16                  // 72: Vertical screen resolution
-        let padding = [UInt8](repeating: 0, count: 54)  // 74: Padding for 128-byte header length
+        let horizontalScreenSize: Int                   // 70: Horizontal screen resolution
+        let verticalScreenSize: Int                     // 72: Vertical screen resolution
         
-        static let size = 128
-        private static let magicNumber: UInt8 = 0x0A
-        private static let reservedByte: UInt8 = 0
-        
-        var depth: Int {
-            Int(bitsPerPixelPerPlane) * Int(numberOfPlanes)
-        }
-        
-        var imageType: ImageType {
-            switch bitsPerPixelPerPlane {
-            case 1:
-                switch numberOfPlanes {
-                case 3, 4:
-                    .egaPlanar
-                default:
-                    .unknown
-                }
-            case 4:
-                numberOfPlanes == 1 ? .egaIndexed : .unknown
-            case 8:
-                switch numberOfPlanes {
-                case 1:
-                    .vga
-                case 3 where version == .v30:
-                    .trueColor
-                default:
-                    .unknown
-                }
-            default:
-                .unknown
-            }
-        }
-        
-        var packedData: Data {
-            var data = Data()
-            
-            data.append(id)
-            data.append(version.rawValue)
-            data.append(encoding.rawValue)
-            data.append(bitsPerPixelPerPlane)
-            data.append(minX.littleEndian)
-            data.append(minY.littleEndian)
-            data.append(maxX.littleEndian)
-            data.append(maxY.littleEndian)
-            data.append(horizontalDPI.littleEndian)
-            data.append(verticalDPI.littleEndian)
-            data.append(contentsOf: palette)
-            data.append(reserved)
-            data.append(numberOfPlanes)
-            data.append(bytesPerLine.littleEndian)
-            data.append(paletteType.rawValue.littleEndian)
-            data.append(horizontalScreenSize.littleEndian)
-            data.append(verticalScreenSize.littleEndian)
-            data.append(contentsOf: padding)
-            
-            return data
-        }
+        static let size = 128                           // includes 54 bytes of padding
         
         init(
             version: Version,
             encoding: Encoding,
-            bitsPerPixelPerPlane: UInt8,
-            minX: UInt16,
-            minY: UInt16,
-            maxX: UInt16,
-            maxY: UInt16,
-            horizontalDPI: UInt16,
-            verticalDPI: UInt16,
+            bitsPerPixelPerPlane: Int,
+            minX: Int,
+            minY: Int,
+            maxX: Int,
+            maxY: Int,
+            horizontalDPI: Int,
+            verticalDPI: Int,
             palette: [UInt8],
-            numberOfPlanes: UInt8,
-            bytesPerLine: UInt16,
+            numberOfPlanes: Int,
+            bytesPerLine: Int,
             paletteType: PaletteType,
-            horizontalScreenSize: UInt16,
-            verticalScreenSize: UInt16
+            horizontalScreenSize: Int,
+            verticalScreenSize: Int
         ) {
             self.version = version
             self.encoding = encoding
@@ -227,11 +315,13 @@ struct PCXFile: FileDocument {
             let id: UInt8 = data.read(at: &offset)
             guard id == Self.magicNumber else { throw HeaderError.magicNumber }
             
-            guard let version = Version(rawValue: data.read(at: &offset)) else {
+            let versionByte: UInt8 = data.read(at: &offset)
+            guard let version = Version(rawValue: Int(versionByte)) else {
                 throw HeaderError.version
             }
             
-            guard let encoding = Encoding(rawValue: data.read(at: &offset)) else {
+            let encodingByte: UInt8 = data.read(at: &offset)
+            guard let encoding = Encoding(rawValue: Int(encodingByte)) else {
                 throw HeaderError.encoding
             }
             
@@ -251,9 +341,8 @@ struct PCXFile: FileDocument {
                 throw HeaderError.bytesPerLine(bytesPerLine)
             }
             
-            guard let paletteType = PaletteType(
-                rawValue: UInt16(littleEndian: data.read(at: &offset))
-            ) else {
+            let paletteTypeBytes = UInt16(littleEndian: data.read(at: &offset))
+            guard let paletteType = PaletteType(rawValue: Int(paletteTypeBytes)) else {
                 throw HeaderError.paletteType
             }
             
@@ -263,182 +352,68 @@ struct PCXFile: FileDocument {
             self.init(
                 version: version,
                 encoding: encoding,
-                bitsPerPixelPerPlane: bitsPerPixelPerPlane,
-                minX: minX,
-                minY: minY,
-                maxX: maxX,
-                maxY: maxY,
-                horizontalDPI: horizontalDPI,
-                verticalDPI: verticalDPI,
+                bitsPerPixelPerPlane: Int(bitsPerPixelPerPlane),
+                minX: Int(minX),
+                minY: Int(minY),
+                maxX: Int(maxX),
+                maxY: Int(maxY),
+                horizontalDPI: Int(horizontalDPI),
+                verticalDPI: Int(verticalDPI),
                 palette: palette,
-                numberOfPlanes: numberOfPlanes,
-                bytesPerLine: bytesPerLine,
+                numberOfPlanes: Int(numberOfPlanes),
+                bytesPerLine: Int(bytesPerLine),
                 paletteType: paletteType,
-                horizontalScreenSize: horizontalScreenSize,
-                verticalScreenSize: verticalScreenSize
+                horizontalScreenSize: Int(horizontalScreenSize),
+                verticalScreenSize: Int(verticalScreenSize)
             )
         }
-    }
-    
-    let header: Header
-    let width: Int
-    let height: Int
-    
-    private let palette: [UInt8]
-    private let imageData: Data
-    private var imageBytes: [UInt8] = []
-    
-    private static let paletteFlag: UInt8 = 0x0C
-    private static let egaPalette: [UInt8] = [
-        0x00, 0x00, 0x00,   // black
-        0xAA, 0x00, 0x00,   // blue
-        0x00, 0xAA, 0xAA,   // green
-        0xAA, 0xAA, 0x00,   // cyan
-        0x00, 0x00, 0xAA,   // red
-        0xAA, 0x00, 0xAA,   // magenta
-        0x00, 0x55, 0xAA,   // brown
-        0xAA, 0xAA, 0xAA,   // light gray
-        0x55, 0x55, 0x55,   // dark gray
-        0xFF, 0x55, 0x55,   // light blue
-        0x55, 0xFF, 0x55,   // light green
-        0xFF, 0xFF, 0x55,   // light cyan
-        0x55, 0x55, 0xFF,   // light red
-        0xFF, 0x55, 0xFF,   // light magenta
-        0x55, 0xFF, 0xFF,   // yellow
-        0xFF, 0xFF, 0xFF,   // white
-    ]
-    
-    init(data: Data) throws {
-        self.header = try Header(data: data.prefix(Header.size))
-        self.width = Int(header.maxX) - Int(header.minX) + 1
-        self.height = Int(header.maxY) - Int(header.minY) + 1
         
-        self.palette = switch header.version {
-        case .v25, .v28WithoutPalette:
-            Self.egaPalette                              // fixed EGA palette
-        case .v28WithPalette:
-            header.palette                               // modified EGA palette
-        case .v30 where data[data.endIndex - 769] == Self.paletteFlag:
-            data.suffix(768)                             // VGA 256-color palette
-        case .v30 where header.imageType == .trueColor:
-            []                                           // VGA 24-bit no palette
-        default:
-            throw Header.HeaderError.version
+        var imageType: ImageType {
+            switch bitsPerPixelPerPlane {
+            case 1 where numberOfPlanes == 3 || numberOfPlanes == 4:
+                .egaPlanar
+            case 4 where numberOfPlanes == 1:
+                .egaIndexed
+            case 8 where numberOfPlanes == 1:
+                .vga
+            case 8 where numberOfPlanes == 3 && version == .v30:
+                .trueColor
+            default:
+                .unknown
+            }
         }
         
-        self.imageData = data.advanced(by: Header.size)
-        guard imageData.count > 0 else { throw CocoaError(.fileReadCorruptFile) }
-        self.imageBytes = decodeRLE(imageData)
-    }
-    
-    private func decodeRLE(_ data: Data) -> [UInt8] {
-        let encodedBytes = [UInt8](data)
-        var decodedLines: [[UInt8]] = []
-        
-        let totalBytesPerLine = Int(header.bytesPerLine) * Int(header.numberOfPlanes)
-        var offset = 0
-        
-        var lineBytes: [UInt8] = []
-        lineBytes.reserveCapacity(totalBytesPerLine)
-        
-        // decode each line of RLE encoded bytes
-        for _ in 0..<height {
-            while lineBytes.count < totalBytesPerLine && offset < encodedBytes.count {
-                let encodedByte = encodedBytes[offset]
-                
-                if encodedByte < 192 {
-                    lineBytes.append(encodedByte)
-                } else {
-                    let count = Int(encodedByte & 0x3F)
-                    offset += 1
-                    let value = encodedBytes[offset]
-                    lineBytes.append(contentsOf: [UInt8](repeating: value, count: count))
-                }
-                
-                offset += 1
-            }
+        var packedData: Data {
+            var data = Data()
             
-            decodedLines.append(lineBytes)
-            lineBytes.removeAll(keepingCapacity: true)
-        }
-        
-        // separate the color planes from the decoded bytes
-        let colorPlanes: [[UInt8]] = (0..<Int(header.numberOfPlanes)).map { plane in
-            decodedLines.flatMap { line in
-                let start = line.startIndex + plane * Int(header.bytesPerLine)
-                let end = start + width
-                return line[start..<end]
-            }
-        }
-        
-        return switch header.imageType {
-        case .vga:
-            colorPlanes[0]
-        case .trueColor:
-            // interleve the true-color color planes
-            // planes are ordered red, green, blue
-            zip(colorPlanes[0], zip(colorPlanes[1], colorPlanes[2])).map {
-                ($0.1.1, $0.1.0, $0.0)  // (blue, green, red)
-            }.flatMap { (blue, green, red) in
-                [blue, green, red, UInt8.max]   // ARGB32, little endian
-            }
-        default:
-            []
-        }
-    }
-    
-    var cgImage: CGImage? {
-        guard let baseColorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
-        
-        let colorSpace: CGColorSpace
-        let bitmapInfo: CGBitmapInfo
-        let bitsPerPixel: Int
-        let bytesPerRow: Int
-        
-        if header.imageType == .trueColor {
-            colorSpace = baseColorSpace
-            bitmapInfo = CGBitmapInfo(rawValue: CGImageByteOrderInfo.order32Little.rawValue |
-                                      CGImageAlphaInfo.premultipliedFirst.rawValue)
-            bitsPerPixel = UInt32.bitWidth
-            bytesPerRow = MemoryLayout<UInt32>.size * width
-        } else {
-            guard let indexedColorSpace = CGColorSpace(
-                indexedBaseSpace: baseColorSpace,
-                last: Int(UInt8.max),
-                colorTable: [UInt8](palette)
-            ) else {
-                return nil
-            }
+            data.append(Self.magicNumber)
+            data.append(UInt8(version.rawValue))
+            data.append(UInt8(encoding.rawValue))
+            data.append(UInt8(bitsPerPixelPerPlane))
+            data.append(UInt16(minX).littleEndian)
+            data.append(UInt16(minY).littleEndian)
+            data.append(UInt16(maxX).littleEndian)
+            data.append(UInt16(maxY).littleEndian)
+            data.append(UInt16(horizontalDPI).littleEndian)
+            data.append(UInt16(verticalDPI).littleEndian)
+            data.append(contentsOf: palette)
+            data.append(Self.reservedByte)
+            data.append(UInt8(numberOfPlanes))
+            data.append(UInt16(bytesPerLine).littleEndian)
+            data.append(UInt16(paletteType.rawValue).littleEndian)
+            data.append(UInt16(horizontalScreenSize).littleEndian)
+            data.append(UInt16(verticalScreenSize).littleEndian)
+            data.append(Data(count: 54))                            // padding
             
-            colorSpace = indexedColorSpace
-            bitmapInfo = CGBitmapInfo(rawValue: CGImageByteOrderInfo.orderDefault.rawValue |
-                                      CGImageAlphaInfo.none.rawValue)
-            bitsPerPixel = Int(header.bitsPerPixelPerPlane) * Int(header.numberOfPlanes)
-            bytesPerRow = width * bitsPerPixel / UInt8.bitWidth
+            return data
         }
-        
-        guard let dataProvider = CGDataProvider(data: Data(imageBytes) as CFData) else {
-            return nil
-        }
-        
-        return CGImage(
-            width: width,
-            height: height,
-            bitsPerComponent: Int(header.bitsPerPixelPerPlane),
-            bitsPerPixel: bitsPerPixel,
-            bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo,
-            provider: dataProvider,
-            decode: nil,
-            shouldInterpolate: false,
-            intent: .defaultIntent
-        )
     }
-    
-    // MARK: - FileDocument
+}
+
+// MARK: - FileDocument
+extension PCXFile {
     static var readableContentTypes: [UTType] = [.pcx]
-    static var writableContentTypes: [UTType] = [.bmp, .jpeg, .png]
+    static var writableContentTypes: [UTType] = [.bmp, .jpeg, .pcx, .png]
     
     init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents else {
@@ -458,6 +433,8 @@ struct PCXFile: FileDocument {
                 bitmapRep.representation(using: .bmp, properties: [:])
             case .jpeg:
                 bitmapRep.representation(using: .jpeg, properties: [:])
+            case .pcx:
+                pcxData
             case .png:
                 bitmapRep.representation(using: .png, properties: [:])
             default:
@@ -469,8 +446,10 @@ struct PCXFile: FileDocument {
         
         return FileWrapper(regularFileWithContents: data)
     }
-    
-    // MARK: - Example
+}
+
+// MARK: - Example
+extension PCXFile {
     static var example: Self {
         guard let url = Bundle.main.url(forResource: "example", withExtension: "pcx") else {
             fatalError("Could not find example file in bundle.")
@@ -484,3 +463,23 @@ struct PCXFile: FileDocument {
         }
     }
 }
+
+// MARK: - EGA Palette
+fileprivate let egaPalette: [UInt8] = [
+    0x00, 0x00, 0x00,   // black
+    0xAA, 0x00, 0x00,   // blue
+    0x00, 0xAA, 0xAA,   // green
+    0xAA, 0xAA, 0x00,   // cyan
+    0x00, 0x00, 0xAA,   // red
+    0xAA, 0x00, 0xAA,   // magenta
+    0x00, 0x55, 0xAA,   // brown
+    0xAA, 0xAA, 0xAA,   // light gray
+    0x55, 0x55, 0x55,   // dark gray
+    0xFF, 0x55, 0x55,   // light blue
+    0x55, 0xFF, 0x55,   // light green
+    0xFF, 0xFF, 0x55,   // light cyan
+    0x55, 0x55, 0xFF,   // light red
+    0xFF, 0x55, 0xFF,   // light magenta
+    0x55, 0xFF, 0xFF,   // yellow
+    0xFF, 0xFF, 0xFF,   // white
+]
