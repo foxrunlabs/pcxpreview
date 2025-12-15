@@ -10,14 +10,13 @@ final class ZoomController {
     }
     
     private(set) var scale = 1.0
+    private var zoomLocked = false
     
     var fitScale = 1.0 {
         didSet {
             if zoomLocked { zoom(.fit) }    // live zoom if user selected zoom to fit
         }
     }
-    
-    private var zoomLocked = false
     
     var isActualSize: Bool { scale == 1.0 }
     var isZoomedToFit: Bool { scale == fitScale }

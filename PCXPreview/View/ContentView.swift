@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -5,8 +6,8 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     let document: PCXFile
     let fileURL: URL?
-    
     private let cgImage: CGImage?
+    
     @State private var zoomController = ZoomController()
     @State private var showInspector = false
     @State private var showExporter = false
@@ -31,13 +32,16 @@ struct ContentView: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .defaultScrollAnchor(.center, for: .sizeChanges)
-                .onGeometryChange(for: CGSize.self) { geometry in
-                    geometry.size
-                } action: { _, newSize in
+                .onGeometryChange(for: CGSize.self, of: \.size) { _, newSize in
                     zoomController.fitScale = min(
                         newSize.width / Double(cgImage.width),
                         newSize.height / Double(cgImage.height)
                     )
+                }
+                .onAppear {
+                    if document.width > 640 || document.height > 480 {
+                        zoomController.zoom(.fit)
+                    }
                 }
             } else {
                 ContentUnavailableView(
